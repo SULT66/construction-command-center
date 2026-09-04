@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)"
-cd "$ROOT"
+TARGET="${1:-$PWD}"
+cd "$TARGET"
 node --check deploy/full-web/app.js
 node --check vendor/p3-backend/dist/persistence/postgres/postgres-safestart-api-repository.js
 grep -q "cache:'no-store'" deploy/full-web/app.js
