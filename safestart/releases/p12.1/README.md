@@ -13,23 +13,23 @@ Apply it to the verified `SafeStart_P12_Live_Pilot_RC_v1.0` release artifact (ZI
 
 ## Apply
 
-From the root of an extracted P12 RC:
+From the root of an extracted P12 RC, run the hotfix script from this Git checkout and pass the extracted P12 directory as the target:
 
 ```sh
-bash safestart/releases/p12.1/apply-hotfixes.sh
+bash ~/construction-command-center/safestart/releases/p12.1/apply-hotfixes.sh "$PWD"
 ```
 
-Or apply the patches directly:
+Or apply the patches directly from the checkout:
 
 ```sh
-patch -p1 < safestart/releases/p12.1/patches/001-rebrief-order.patch
-patch -p1 < safestart/releases/p12.1/patches/002-ui-state-refresh.patch
+patch -p1 < ~/construction-command-center/safestart/releases/p12.1/patches/001-rebrief-order.patch
+patch -p1 < ~/construction-command-center/safestart/releases/p12.1/patches/002-ui-state-refresh.patch
 ```
 
 ## Validate
 
 ```sh
-bash safestart/releases/p12.1/validate-hotfix.sh
+bash ~/construction-command-center/safestart/releases/p12.1/validate-hotfix.sh "$PWD"
 ```
 
 ## Live E2E acceptance observed
