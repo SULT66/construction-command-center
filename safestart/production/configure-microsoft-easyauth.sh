@@ -45,15 +45,11 @@ if ! az ad sp show --id "$CLIENT_ID" >/dev/null 2>&1; then
   az ad sp create --id "$CLIENT_ID" --only-show-errors >/dev/null
 fi
 
-# Newly created Linux apps may still expose an Auth v1/classic config object.
-# Upgrade it before using authV2 provider commands.
 echo "UPGRADE_APP_SERVICE_AUTH_TO_V2"
 az webapp auth config-version upgrade \
   -g "$RG" -n "$PROD_WEB_APP" \
   --only-show-errors >/dev/null || true
 
-# Reuse an already-created secret from a previous partial run. This avoids
-# appending unnecessary Entra credentials when the script is safely rerun.
 EXISTING_SECRET="$(az webapp config appsettings list \
   -g "$RG" -n "$PROD_WEB_APP" \
   --query "[?name=='$SECRET_SETTING'].value | [0]" -o tsv 2>/dev/null || true)"
@@ -98,11 +94,12 @@ az webapp auth update \
   --enable-token-store true \
   --only-show-errors >/dev/null
 
-AUTH_ENABLED="$(az webapp auth show -g "$RG" -n "$PROD_WEB_APP" --query enabled -o tsv)"
+# authSettingsV2 exposes the enabled flag under platform.enabled.
+AUTH_ENABLED="$(az webapp auth show -g "$RG" -n "$PROD_WEB_APP" --query platform.enabled -o tsv 2>/dev/null || true)"
 PROVIDER_CLIENT_ID="$(az webapp auth microsoft show -g "$RG" -n "$PROD_WEB_APP" --query registration.clientId -o tsv 2>/dev/null || true)"
 
 if [ "$AUTH_ENABLED" != "true" ] && [ "$AUTH_ENABLED" != "True" ]; then
-  echo "ERROR: App Service authentication is not enabled" >&2
+  echo "ERROR: App Service authentication is not enabled (platform.enabled=$AUTH_ENABLED)" >&2
   exit 1
 fi
 if [ "$PROVIDER_CLIENT_ID" != "$CLIENT_ID" ]; then
