@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { Pool } from 'pg';
 import { verifiedClaimsFromEasyAuthHeaders } from './easyauth-claims.mjs';
 import {
@@ -15,9 +16,13 @@ import {
 
 const port = Number(process.env.PORT || 8080);
 const connectionString = process.env.DATABASE_URL;
+const proxyKey = process.env.SAFESTART_PROXY_KEY;
 
 if (!connectionString) {
   throw new Error('DATABASE_URL is required');
+}
+if (!proxyKey || proxyKey.length < 32) {
+  throw new Error('SAFESTART_PROXY_KEY is required and must be at least 32 characters');
 }
 
 const pool = new Pool({ connectionString, max: 10, ssl: { rejectUnauthorized: false } });
@@ -30,6 +35,14 @@ function json(res, statusCode, body) {
     'cache-control': 'no-store'
   });
   res.end(payload);
+}
+
+function requireTrustedProxy(req) {
+  const supplied = Buffer.from(String(req.headers['x-safestart-proxy-key'] || ''));
+  const expected = Buffer.from(String(proxyKey));
+  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+    throw Object.assign(new Error('Trusted application proxy required'), { statusCode: 403 });
+  }
 }
 
 async function readJson(req) {
@@ -173,6 +186,10 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/readyz') {
       await pool.query('SELECT 1');
       return json(res, 200, { ok: true, database: true });
+    }
+
+    if (url.pathname.startsWith('/api/v1/')) {
+      requireTrustedProxy(req);
     }
 
     if (req.method === 'GET' && url.pathname === '/api/v1/session') {
