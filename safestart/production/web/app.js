@@ -38,6 +38,18 @@ async function api(path, options = {}) {
   return response.json();
 }
 
+function tenantApi(path, options = {}) {
+  const organizationId = state.organization?.organizationId;
+  if (!organizationId) throw new Error('No organization selected');
+  return api(path, {
+    ...options,
+    headers: {
+      'x-safestart-organization-id': organizationId,
+      ...(options.headers || {})
+    }
+  });
+}
+
 function setUserMenu(user) {
   if (!user) {
     userMenu.classList.add('hidden');
@@ -118,10 +130,14 @@ async function chooseOrganization(organizationId) {
   }
 }
 
+function organizationName() {
+  const org = (state.session?.organizations || []).find(o => o.id === state.organization?.organizationId);
+  return org?.name || 'Organization';
+}
+
 function renderProjects(context) {
   const projects = context.projects || [];
-  const org = (state.session?.organizations || []).find(o => o.id === context.organizationId);
-  const orgName = org?.name || 'Organization';
+  const orgName = organizationName();
 
   if (projects.length === 0) {
     main.innerHTML = `
@@ -157,12 +173,13 @@ function renderProjects(context) {
     button.addEventListener('click', () => {
       const project = projects.find(p => p.project_id === button.dataset.project);
       state.project = project;
-      renderDashboard(project, orgName);
+      renderDashboard(project);
     });
   });
 }
 
-function renderDashboard(project, orgName) {
+function renderDashboard(project) {
+  const orgName = organizationName();
   main.innerHTML = `
     <div class="page-head">
       <div>
@@ -183,7 +200,7 @@ function renderDashboard(project, orgName) {
       <h2>Production modules</h2>
       <div class="card-list">
         <button class="choice" disabled><strong>SafeStart Plans</strong><small>Production workflow integration next</small></button>
-        <button class="choice" disabled><strong>Workforce</strong><small>Worker database and Production Worker Card next</small></button>
+        <button id="openWorkforce" class="choice"><strong>Workforce</strong><small>Worker database, project assignments and Production Worker Cards</small></button>
         <button class="choice" disabled><strong>Reports & Compliance</strong><small>Immutable reports and exports</small></button>
         <button class="choice" disabled><strong>Project Settings</strong><small>Team & Access, catalogs, profiles and branding</small></button>
       </div>
@@ -191,6 +208,166 @@ function renderDashboard(project, orgName) {
   `;
 
   document.querySelector('#backProjects').addEventListener('click', () => renderProjects(state.organization));
+  document.querySelector('#openWorkforce').addEventListener('click', renderWorkforce);
+}
+
+async function renderWorkforce(search = '') {
+  const project = state.project;
+  if (!project) return renderProjects(state.organization);
+  main.innerHTML = '<div class="loading">Loading workforce…</div>';
+  try {
+    const params = new URLSearchParams({ projectId: project.project_id });
+    if (search) params.set('search', search);
+    const result = await tenantApi(`/api/v1/workers?${params}`);
+    const workers = result.workers || [];
+
+    main.innerHTML = `
+      <div class="page-head">
+        <div>
+          <div class="badge">${esc(organizationName())}</div>
+          <h1>Workforce</h1>
+          <p>${esc(project.project_name)} · ${workers.length} active worker${workers.length === 1 ? '' : 's'}</p>
+        </div>
+        <div class="page-actions">
+          <button id="backDashboard" class="btn btn-secondary">Dashboard</button>
+          <button id="addWorker" class="btn btn-primary">+ Add Worker</button>
+        </div>
+      </div>
+
+      <section class="panel">
+        <div class="toolbar">
+          <input id="workerSearch" value="${esc(search)}" placeholder="Search name, Worker ID, employer or trade" />
+          <button id="searchWorkers" class="btn btn-secondary">Search</button>
+        </div>
+        ${workers.length === 0 ? `
+          <div class="notice">No workers are assigned to this project yet.</div>
+        ` : `
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>Worker</th><th>Employer</th><th>Trade / Role</th><th>Eligibility</th><th>Device</th><th></th></tr></thead>
+              <tbody>
+                ${workers.map(worker => `
+                  <tr>
+                    <td><div class="worker-name">${esc(worker.full_name)}</div><div class="worker-meta">${esc(worker.worker_number)}</div></td>
+                    <td>${esc(worker.employer_name || '—')}</td>
+                    <td>${esc([worker.trade, worker.role_title].filter(Boolean).join(' · ') || '—')}</td>
+                    <td><span class="badge ${worker.eligibility_status === 'ELIGIBLE' ? 'badge-ok' : 'badge-warn'}">${esc(worker.eligibility_status || 'PENDING')}</span></td>
+                    <td>${esc((worker.devices || []).map(d => `${d.type}: ${d.identifier}`).join(', ') || '—')}</td>
+                    <td><button class="btn btn-secondary" data-worker-card="${esc(worker.id)}">View</button></td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        `}
+      </section>
+    `;
+
+    document.querySelector('#backDashboard').addEventListener('click', () => renderDashboard(project));
+    document.querySelector('#addWorker').addEventListener('click', openAddWorkerModal);
+    document.querySelector('#searchWorkers').addEventListener('click', () => renderWorkforce(document.querySelector('#workerSearch').value.trim()));
+    document.querySelector('#workerSearch').addEventListener('keydown', event => {
+      if (event.key === 'Enter') renderWorkforce(event.currentTarget.value.trim());
+    });
+    document.querySelectorAll('[data-worker-card]').forEach(button => {
+      button.addEventListener('click', () => openWorkerCard(button.dataset.workerCard));
+    });
+  } catch (error) {
+    renderError(error);
+  }
+}
+
+function openAddWorkerModal() {
+  const project = state.project;
+  const wrapper = document.createElement('div');
+  wrapper.className = 'modal-backdrop';
+  wrapper.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="addWorkerTitle">
+      <h2 id="addWorkerTitle">Add Worker</h2>
+      <form id="addWorkerForm">
+        <div class="form-grid">
+          <div class="field"><label>Full Name</label><input name="fullName" required /></div>
+          <div class="field"><label>Worker ID</label><input name="workerNumber" required /></div>
+          <div class="field"><label>Type</label><select name="workerType"><option>CONTRACTOR</option><option>EMPLOYEE</option><option>VISITOR</option></select></div>
+          <div class="field"><label>Employer / Subcontractor</label><input name="employerName" /></div>
+          <div class="field"><label>Trade</label><input name="trade" /></div>
+          <div class="field"><label>Role</label><input name="roleTitle" /></div>
+          <div class="field"><label>Zone</label><input name="zone" /></div>
+          <div class="field"><label>Shift</label><input name="shiftName" /></div>
+          <div class="field"><label>Training</label><select name="trainingStatus"><option>UNKNOWN</option><option>CURRENT</option><option>EXPIRING</option><option>EXPIRED</option></select></div>
+          <div class="field"><label>Certifications</label><select name="certificationStatus"><option>UNKNOWN</option><option>CURRENT</option><option>EXPIRING</option><option>EXPIRED</option></select></div>
+          <div class="field full"><label>Eligibility</label><select name="eligibilityStatus"><option>PENDING</option><option>ELIGIBLE</option><option>INELIGIBLE</option></select></div>
+        </div>
+        <div id="workerFormError"></div>
+        <div class="modal-actions">
+          <button type="button" id="cancelWorker" class="btn btn-secondary">Cancel</button>
+          <button type="submit" class="btn btn-primary">Create Worker</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(wrapper);
+
+  const close = () => wrapper.remove();
+  document.querySelector('#cancelWorker').addEventListener('click', close);
+  wrapper.addEventListener('click', event => { if (event.target === wrapper) close(); });
+  document.querySelector('#addWorkerForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const body = Object.fromEntries(form.entries());
+    body.projectId = project.project_id;
+    body.assignmentRole = body.roleTitle;
+    const errorBox = document.querySelector('#workerFormError');
+    errorBox.innerHTML = '';
+    try {
+      await tenantApi('/api/v1/workers', { method: 'POST', body: JSON.stringify(body) });
+      close();
+      await renderWorkforce();
+    } catch (error) {
+      errorBox.innerHTML = `<div class="error" style="margin-top:14px">${esc(error.message)}</div>`;
+    }
+  });
+}
+
+async function openWorkerCard(workerId) {
+  const project = state.project;
+  try {
+    const data = await tenantApi(`/api/v1/workers/${workerId}?projectId=${encodeURIComponent(project.project_id)}`);
+    const worker = data.worker;
+    const assignment = (data.assignments || [])[0] || {};
+    const wrapper = document.createElement('div');
+    wrapper.className = 'modal-backdrop';
+    wrapper.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="page-head">
+          <div><span class="badge">PRODUCTION WORKER CARD</span><h2 style="margin-top:10px">${esc(worker.full_name)}</h2><p>${esc(worker.worker_number)}</p></div>
+          <button id="closeWorkerCard" class="btn btn-secondary">Close</button>
+        </div>
+        <div class="profile-grid">
+          <div class="profile-item"><span>Employer</span><strong>${esc(worker.employer_name || '—')}</strong></div>
+          <div class="profile-item"><span>Trade / Role</span><strong>${esc([worker.trade, worker.role_title].filter(Boolean).join(' · ') || '—')}</strong></div>
+          <div class="profile-item"><span>Project</span><strong>${esc(assignment.project_name || project.project_name)}</strong></div>
+          <div class="profile-item"><span>Zone / Shift</span><strong>${esc([assignment.zone, assignment.shift_name].filter(Boolean).join(' · ') || '—')}</strong></div>
+          <div class="profile-item"><span>Supervisor</span><strong>${esc(assignment.supervisor_name || 'Not assigned')}</strong></div>
+          <div class="profile-item"><span>Eligibility</span><strong>${esc(worker.eligibility_status || 'PENDING')}</strong></div>
+          <div class="profile-item"><span>Training</span><strong>${esc(worker.training_status || 'UNKNOWN')}</strong></div>
+          <div class="profile-item"><span>Certifications</span><strong>${esc(worker.certification_status || 'UNKNOWN')}</strong></div>
+          <div class="profile-item"><span>Required PPE</span><strong>${esc(Array.isArray(worker.required_ppe) ? worker.required_ppe.join(', ') || '—' : '—')}</strong></div>
+          <div class="profile-item"><span>Assigned Devices</span><strong>${esc((data.devices || []).filter(d => d.status === 'ASSIGNED').map(d => `${d.device_type}: ${d.device_identifier}`).join(', ') || '—')}</strong></div>
+        </div>
+        <section style="margin-top:20px">
+          <h2>Credentials</h2>
+          ${(data.credentials || []).length ? `<div class="card-list">${data.credentials.map(c => `<div class="profile-item"><span>${esc(c.credential_type)}</span><strong>${esc(c.credential_name)}</strong><div class="worker-meta">${esc(c.status)}${c.expires_at ? ` · Expires ${esc(c.expires_at)}` : ''}</div></div>`).join('')}</div>` : '<div class="notice">No credentials linked yet.</div>'}
+        </section>
+      </div>
+    `;
+    document.body.appendChild(wrapper);
+    const close = () => wrapper.remove();
+    document.querySelector('#closeWorkerCard').addEventListener('click', close);
+    wrapper.addEventListener('click', event => { if (event.target === wrapper) close(); });
+  } catch (error) {
+    renderError(error);
+  }
 }
 
 function renderError(error) {
