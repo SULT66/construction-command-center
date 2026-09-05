@@ -13,8 +13,16 @@ if ! [[ "$INVITE_DAYS" =~ ^[0-9]+$ ]] || [ "$INVITE_DAYS" -lt 1 ] || [ "$INVITE_
 fi
 
 EMAIL="$(printf '%s' "$ADMIN_EMAIL" | tr '[:upper:]' '[:lower:]' | xargs)"
-if [[ "$EMAIL" != *@*.* ]]; then
-  echo "ERROR: ADMIN_EMAIL does not look valid" >&2
+
+# Azure CLI may represent a personal Microsoft account as, for example,
+# live.com#person@example.com. Easy Auth/OIDC normally supplies the actual
+# email/username, so store the canonical email address in the invitation.
+if [[ "$EMAIL" == *#*@*.* ]]; then
+  EMAIL="${EMAIL#*#}"
+fi
+
+if [[ "$EMAIL" != *@*.* || "$EMAIL" == *#* ]]; then
+  echo "ERROR: ADMIN_EMAIL does not look like a canonical email address" >&2
   exit 1
 fi
 
