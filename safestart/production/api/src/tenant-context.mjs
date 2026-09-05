@@ -8,92 +8,35 @@ export async function resolveUserFromVerifiedClaims(client, claims) {
     throw Object.assign(new Error('Verified OIDC claims must include iss and sub'), { statusCode: 401 });
   }
 
-  const login = await client.query(
-    `SELECT u.id, u.email, u.full_name, u.status
-       FROM identity_logins l
-       JOIN identity_users u ON u.id = l.user_id
-      WHERE l.issuer = $1 AND l.subject = $2`,
-    [issuer, subject]
-  );
-
-  if (login.rowCount === 1) {
-    const user = login.rows[0];
-    if (user.status !== 'ACTIVE') {
-      throw Object.assign(new Error('User account is not active'), { statusCode: 403 });
-    }
-    await client.query(
-      `UPDATE identity_logins
-          SET last_login_at = now(), email_at_login = $3
-        WHERE issuer = $1 AND subject = $2`,
-      [issuer, subject, email]
+  try {
+    const result = await client.query(
+      `SELECT user_id AS id, email, full_name, status
+         FROM safestart_resolve_invited_identity($1, $2, $3, $4)`,
+      [issuer, subject, email, fullName]
     );
-    return user;
+
+    if (result.rowCount !== 1) {
+      throw new Error('Identity resolution failed');
+    }
+
+    return result.rows[0];
+  } catch (error) {
+    if (/invitation|identity|active/i.test(error.message || '')) {
+      throw Object.assign(new Error(error.message), { statusCode: 403 });
+    }
+    throw error;
   }
-
-  // First login is allowed only when an active invitation exists for the verified email.
-  if (!email) {
-    throw Object.assign(new Error('No invitation matched this identity'), { statusCode: 403 });
-  }
-
-  const invitation = await client.query(
-    `SELECT i.id, i.organization_id, i.organization_role
-       FROM organization_invitations i
-      WHERE lower(i.email) = lower($1)
-        AND i.accepted_at IS NULL
-        AND i.revoked_at IS NULL
-        AND i.expires_at > now()
-      ORDER BY i.created_at DESC
-      LIMIT 1`,
-    [email]
-  );
-
-  if (invitation.rowCount !== 1) {
-    throw Object.assign(new Error('No active SafeStart invitation for this email'), { statusCode: 403 });
-  }
-
-  const created = await client.query(
-    `INSERT INTO identity_users (issuer, subject, email, full_name, status)
-     VALUES ($1, $2, $3, $4, 'ACTIVE')
-     RETURNING id, email, full_name, status`,
-    [issuer, subject, email, fullName]
-  );
-
-  const user = created.rows[0];
-  const invite = invitation.rows[0];
-
-  await client.query(
-    `INSERT INTO identity_logins (user_id, issuer, subject, provider, email_at_login, last_login_at)
-     VALUES ($1, $2, $3, 'OIDC', $4, now())`,
-    [user.id, issuer, subject, email]
-  );
-
-  await client.query(
-    `INSERT INTO organization_members (organization_id, user_id, role, status)
-     VALUES ($1, $2, $3, 'ACTIVE')
-     ON CONFLICT (organization_id, user_id, role)
-     DO UPDATE SET status = 'ACTIVE'`,
-    [invite.organization_id, user.id, invite.organization_role]
-  );
-
-  await client.query(
-    `UPDATE organization_invitations SET accepted_at = now() WHERE id = $1`,
-    [invite.id]
-  );
-
-  return user;
 }
 
 export async function listOrganizationsForUser(client, userId) {
   const result = await client.query(
-    `SELECT o.id, o.slug, o.name, o.branding, o.settings,
-            array_agg(m.role ORDER BY m.role) AS roles
-       FROM organization_members m
-       JOIN organizations o ON o.id = m.organization_id
-      WHERE m.user_id = $1
-        AND m.status = 'ACTIVE'
-        AND o.status = 'ACTIVE'
-      GROUP BY o.id, o.slug, o.name, o.branding, o.settings
-      ORDER BY o.name`,
+    `SELECT organization_id AS id,
+            slug,
+            organization_name AS name,
+            branding,
+            settings,
+            roles
+       FROM safestart_list_user_organizations($1)`,
     [userId]
   );
   return result.rows;
