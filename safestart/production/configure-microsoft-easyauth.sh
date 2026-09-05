@@ -12,7 +12,6 @@ done
 
 az account show >/dev/null
 
-# Use App Service Auth v2 commands.
 if ! az extension show --name authV2 >/dev/null 2>&1; then
   echo "INSTALL_AUTHV2_EXTENSION"
   az extension add --name authV2 --only-show-errors >/dev/null
@@ -21,7 +20,6 @@ fi
 WEB_ORIGIN="https://${PROD_WEB_APP}.azurewebsites.net"
 CALLBACK_URI="${WEB_ORIGIN}/.auth/login/aad/callback"
 
-# Reuse the SafeStart production registration when it already exists.
 CLIENT_ID="$(az ad app list --display-name "$APP_DISPLAY_NAME" --query '[0].appId' -o tsv 2>/dev/null || true)"
 OBJECT_ID="$(az ad app list --display-name "$APP_DISPLAY_NAME" --query '[0].id' -o tsv 2>/dev/null || true)"
 
@@ -36,41 +34,54 @@ if [ -z "$CLIENT_ID" ] || [ -z "$OBJECT_ID" ]; then
   OBJECT_ID="$(printf '%s' "$APP_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 else
   echo "ENTRA_APP_REGISTRATION_EXISTS=$APP_DISPLAY_NAME"
-  # Keep the registration capable of business tenants plus personal Microsoft accounts,
-  # and make sure the Easy Auth callback URI is present.
   az ad app update --id "$OBJECT_ID" \
     --set signInAudience=AzureADandPersonalMicrosoftAccount \
     --web-redirect-uris "$CALLBACK_URI" \
     --only-show-errors >/dev/null
 fi
 
-# Create a service principal if one does not already exist.
 if ! az ad sp show --id "$CLIENT_ID" >/dev/null 2>&1; then
   echo "CREATE_SERVICE_PRINCIPAL"
   az ad sp create --id "$CLIENT_ID" --only-show-errors >/dev/null
 fi
 
-# Easy Auth needs a confidential-client credential. Add a new credential without
-# printing it, then store it only in the App Service application settings.
-SECRET="$(az ad app credential reset \
-  --id "$OBJECT_ID" \
-  --append \
-  --display-name "SafeStart Easy Auth" \
-  --years 1 \
-  --query password -o tsv)"
-
-if [ -z "$SECRET" ]; then
-  echo "ERROR: could not create Entra application credential" >&2
-  exit 1
-fi
-
-az webapp config appsettings set \
+# Newly created Linux apps may still expose an Auth v1/classic config object.
+# Upgrade it before using authV2 provider commands.
+echo "UPGRADE_APP_SERVICE_AUTH_TO_V2"
+az webapp auth config-version upgrade \
   -g "$RG" -n "$PROD_WEB_APP" \
-  --settings "$SECRET_SETTING=$SECRET" \
-  --output none
-unset SECRET
+  --only-show-errors >/dev/null || true
 
-# Multi-tenant + personal Microsoft accounts use the common v2 issuer.
+# Reuse an already-created secret from a previous partial run. This avoids
+# appending unnecessary Entra credentials when the script is safely rerun.
+EXISTING_SECRET="$(az webapp config appsettings list \
+  -g "$RG" -n "$PROD_WEB_APP" \
+  --query "[?name=='$SECRET_SETTING'].value | [0]" -o tsv 2>/dev/null || true)"
+
+if [ -z "$EXISTING_SECRET" ]; then
+  SECRET="$(az ad app credential reset \
+    --id "$OBJECT_ID" \
+    --append \
+    --display-name "SafeStart Easy Auth" \
+    --years 1 \
+    --query password -o tsv)"
+
+  if [ -z "$SECRET" ]; then
+    echo "ERROR: could not create Entra application credential" >&2
+    exit 1
+  fi
+
+  az webapp config appsettings set \
+    -g "$RG" -n "$PROD_WEB_APP" \
+    --settings "$SECRET_SETTING=$SECRET" \
+    --output none
+  unset SECRET
+  echo "ENTRA_CLIENT_SECRET=CREATED"
+else
+  echo "ENTRA_CLIENT_SECRET=REUSED"
+fi
+unset EXISTING_SECRET
+
 az webapp auth microsoft update \
   -g "$RG" -n "$PROD_WEB_APP" \
   --client-id "$CLIENT_ID" \
@@ -79,9 +90,6 @@ az webapp auth microsoft update \
   --yes \
   --only-show-errors >/dev/null
 
-# Keep the public login shell available; API routes still require an authenticated
-# principal and the backend invitation/tenant checks. The Sign in button starts
-# /.auth/login/aad explicitly.
 az webapp auth update \
   -g "$RG" -n "$PROD_WEB_APP" \
   --enabled true \
@@ -90,7 +98,6 @@ az webapp auth update \
   --enable-token-store true \
   --only-show-errors >/dev/null
 
-# Verify that the Microsoft provider is attached without exposing credentials.
 AUTH_ENABLED="$(az webapp auth show -g "$RG" -n "$PROD_WEB_APP" --query enabled -o tsv)"
 PROVIDER_CLIENT_ID="$(az webapp auth microsoft show -g "$RG" -n "$PROD_WEB_APP" --query registration.clientId -o tsv 2>/dev/null || true)"
 
