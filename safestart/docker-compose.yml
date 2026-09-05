@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - safestart_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [safestart]
+
+  api:
+    build:
+      context: .
+      dockerfile: deploy/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 8080
+      DATABASE_URL: ${DATABASE_URL}
+      PILOT_TOKENS_JSON: ${PILOT_TOKENS_JSON}
+      REQUIRE_WORKFORCE_ELIGIBILITY: ${REQUIRE_WORKFORCE_ELIGIBILITY:-true}
+      PG_POOL_MAX: ${PG_POOL_MAX:-10}
+      DEVICE_HMAC_KEYS_JSON: ${DEVICE_HMAC_KEYS_JSON}
+      DEVICE_MAX_CLOCK_SKEW_SEC: ${DEVICE_MAX_CLOCK_SKEW_SEC:-120}
+      GUARDIAN_PRESENCE_TTL_SEC: ${GUARDIAN_PRESENCE_TTL_SEC:-90}
+      EDGE_SYSTEM_ACTOR_ID: ${EDGE_SYSTEM_ACTOR_ID}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/health/ready >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks: [safestart]
+
+  web:
+    build:
+      context: .
+      dockerfile: deploy/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8088:80"
+    networks: [safestart]
+
+volumes:
+  safestart_pg:
+
+networks:
+  safestart:
+    driver: bridge
