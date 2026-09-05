@@ -26,23 +26,31 @@ if [[ "$EMAIL" != *@*.* || "$EMAIL" == *#* ]]; then
   exit 1
 fi
 
+if ! [[ "$ORG_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  echo "ERROR: ORG_ID must be a UUID" >&2
+  exit 1
+fi
+
 command -v psql >/dev/null 2>&1 || { echo "ERROR: psql is required" >&2; exit 1; }
 
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
   -v org_id="$ORG_ID" \
   -v admin_email="$EMAIL" \
   -v invite_days="$INVITE_DAYS" <<'SQL'
-BEGIN;
+SELECT EXISTS (
+  SELECT 1
+  FROM organizations
+  WHERE id = :'org_id'::uuid
+    AND status = 'ACTIVE'
+) AS org_ready \gset
 
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM organizations
-    WHERE id = :'org_id'::uuid AND status = 'ACTIVE'
-  ) THEN
-    RAISE EXCEPTION 'Organization % is missing or inactive', :'org_id';
-  END IF;
-END $$;
+\if :org_ready
+\else
+  \echo 'ERROR: target SafeStart organization is missing or inactive'
+  \quit 3
+\endif
+
+BEGIN;
 
 UPDATE organization_invitations
    SET revoked_at = now()
