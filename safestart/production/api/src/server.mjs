@@ -6,6 +6,12 @@ import {
   listOrganizationsForUser,
   selectOrganization
 } from './tenant-context.mjs';
+import {
+  listWorkers,
+  getWorkerCard,
+  createWorker,
+  requireWorkforceWriteAccess
+} from './workforce.mjs';
 
 const port = Number(process.env.PORT || 8080);
 const connectionString = process.env.DATABASE_URL;
@@ -45,6 +51,32 @@ async function readJson(req) {
 async function authenticatedUser(client, req) {
   const claims = verifiedClaimsFromEasyAuthHeaders(req.headers);
   return resolveUserFromVerifiedClaims(client, claims);
+}
+
+function organizationIdFromRequest(req) {
+  const value = req.headers['x-safestart-organization-id'];
+  if (!value || Array.isArray(value)) {
+    throw Object.assign(new Error('x-safestart-organization-id is required'), { statusCode: 400 });
+  }
+  return String(value);
+}
+
+async function withTenant(req, callback) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const user = await authenticatedUser(client, req);
+    const organizationId = organizationIdFromRequest(req);
+    const context = await selectOrganization(client, user.id, organizationId);
+    const result = await callback({ client, user, organizationId, context });
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function handleSession(req, res) {
@@ -98,6 +130,38 @@ async function handleSelectOrganization(req, res) {
   }
 }
 
+async function handleListWorkers(req, res, url) {
+  const result = await withTenant(req, async ({ client, organizationId }) => {
+    return listWorkers(client, {
+      organizationId,
+      projectId: url.searchParams.get('projectId') || null,
+      search: url.searchParams.get('search') || null,
+      limit: url.searchParams.get('limit') || 100
+    });
+  });
+  json(res, 200, { workers: result });
+}
+
+async function handleGetWorker(req, res, workerId, url) {
+  const result = await withTenant(req, async ({ client, organizationId }) => {
+    return getWorkerCard(client, {
+      organizationId,
+      workerId,
+      projectId: url.searchParams.get('projectId') || null
+    });
+  });
+  json(res, 200, result);
+}
+
+async function handleCreateWorker(req, res) {
+  const body = await readJson(req);
+  const worker = await withTenant(req, async ({ client, user, organizationId }) => {
+    await requireWorkforceWriteAccess(client, user.id, organizationId, body.projectId || null);
+    return createWorker(client, { organizationId, body });
+  });
+  json(res, 201, { worker });
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
@@ -117,6 +181,19 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'POST' && url.pathname === '/api/v1/session/select-organization') {
       return await handleSelectOrganization(req, res);
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/v1/workers') {
+      return await handleListWorkers(req, res, url);
+    }
+
+    const workerMatch = url.pathname.match(/^\/api\/v1\/workers\/([0-9a-fA-F-]{36})$/);
+    if (req.method === 'GET' && workerMatch) {
+      return await handleGetWorker(req, res, workerMatch[1], url);
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/v1/workers') {
+      return await handleCreateWorker(req, res);
     }
 
     return json(res, 404, { error: 'Not found' });
