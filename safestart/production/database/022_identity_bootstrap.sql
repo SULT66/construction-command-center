@@ -66,7 +66,7 @@ BEGIN
 
   INSERT INTO organization_members (organization_id, user_id, role, status)
   VALUES (v_invite.organization_id, v_user.id, v_invite.organization_role, 'ACTIVE')
-  ON CONFLICT (organization_id, user_id, role)
+  ON CONFLICT ON CONSTRAINT organization_members_pkey
   DO UPDATE SET status = 'ACTIVE';
 
   UPDATE organization_invitations
