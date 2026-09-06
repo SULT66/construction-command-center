@@ -25,7 +25,8 @@ for migration in \
   020_client_access.sql \
   021_client_configuration.sql \
   022_identity_bootstrap.sql \
-  023_internal_tenant_seed.sql
+  023_internal_tenant_seed.sql \
+  024_identity_resolution_conflict_fix.sql
 do
   echo "APPLY $migration"
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$ROOT/$migration"
